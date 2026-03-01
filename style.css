@@ -376,7 +376,8 @@ body {
   #speed-controls,
   #tick-display,
   #mode-controls,
-  #btn-civilization {
+  #btn-civilization,
+  #btn-new-cycle {
     flex-shrink: 0;
   }
 

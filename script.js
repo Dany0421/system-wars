@@ -214,6 +214,8 @@ function makeRNG(seed) {
     int(min, max)   { return Math.floor(this.range(min, max + 1)); },
     pick(arr)       { return arr[Math.floor(this.next() * arr.length)]; },
     bool(p = 0.5)   { return this.next() < p; },
+    getState()      { return s >>> 0; },
+    setState(nextState) { s = (nextState >>> 0); },
   };
 }
 
@@ -276,6 +278,379 @@ function neighbors4(x, y, w, h) {
 // Unique ID generator
 let _uid = 0;
 function uid() { return ++_uid; }
+
+const SAVE_STORAGE_KEY = 'emergent-civilization-save-v1';
+const SAVE_VERSION = 1;
+const SAVE_EVERY_TICKS = 5;
+const DEFAULT_IDEOLOGY = { expansion: 0.25, defense: 0.25, economy: 0.25, tech: 0.25 };
+
+function normalizeIdeologyWeights(input) {
+  const base = { ...DEFAULT_IDEOLOGY };
+  if (input && typeof input === 'object') {
+    for (const key of Object.keys(base)) {
+      const v = Number(input[key]);
+      if (Number.isFinite(v)) base[key] = Math.max(0, v);
+    }
+  }
+  const total = Object.values(base).reduce((a, b) => a + b, 0);
+  if (total <= 0) return { ...DEFAULT_IDEOLOGY };
+  for (const key of Object.keys(base)) base[key] /= total;
+  return base;
+}
+
+function serializeWorld(world, meta = {}) {
+  return {
+    version: SAVE_VERSION,
+    savedAt: Date.now(),
+    uidCounter: _uid,
+    meta: {
+      speedKey: Number.isFinite(meta.speedKey) ? meta.speedKey : 1,
+      camera: meta.camera ? {
+        x: Number(meta.camera.x) || 0,
+        y: Number(meta.camera.y) || 0,
+        scale: Number(meta.camera.scale) || 1
+      } : null,
+    },
+    world: {
+      width: world.width,
+      height: world.height,
+      seed: world.seed,
+      tick: world.tick,
+      taxRate: world.taxRate,
+      productionBonus: world.productionBonus,
+      mode: world.mode,
+      events: world.events,
+      rngState: typeof world.rng?.getState === 'function' ? world.rng.getState() : null,
+      tiles: world.tiles.map(row => row.map(tile => ({
+        type: tile.type,
+        fertility: tile.fertility ?? 0,
+        resource: {
+          type: tile.resource?.type ?? null,
+          amount: tile.resource?.amount ?? 0,
+        },
+        influence: { ...(tile.influence ?? {}) },
+        buildingId: tile.building?.id ?? null,
+      }))),
+      buildings: [...world.buildings.values()].map(b => ({
+        id: b.id,
+        type: b.type,
+        clanId: b.clanId,
+        level: b.level,
+        pos: { x: b.pos?.x ?? 0, y: b.pos?.y ?? 0 },
+        hp: b.hp,
+        maxHp: b.maxHp,
+        workerSlots: b.workerSlots,
+        workers: [...(b.workers ?? [])],
+      })),
+      clans: [...world.clans.values()].map(clan => ({
+        id: clan.id,
+        name: clan.name,
+        color: clan.color,
+        ideology: { ...clan.ideology },
+        resources: { ...clan.resources },
+        resourcesAtTickStart: clan.resourcesAtTickStart ? { ...clan.resourcesAtTickStart } : null,
+        ideologySuccessSmoothed: { ...(clan.ideologySuccessSmoothed ?? clan.ideology) },
+        resourceTarget: { ...clan.resourceTarget },
+        territory: [...(clan.territory ?? [])],
+        techTree: {
+          unlocked: [...(clan.techTree?.unlocked ?? [])],
+          research: clan.techTree?.research ?? null,
+        },
+        influenceMap: clan.influenceMap instanceof Map ? [...clan.influenceMap.entries()] : [],
+        leader: clan.leader ?? null,
+        leaderId: clan.leaderId ?? null,
+        allies: [...(clan.allies ?? [])],
+        reputation: clan.reputation ?? 50,
+        agentIds: [...(clan.agentIds ?? [])],
+        buildQueue: (clan.buildQueue ?? []).map(job => ({
+          type: job.type,
+          pos: { x: job.pos?.x ?? 0, y: job.pos?.y ?? 0 },
+        })),
+        laborDemand: { ...(clan.laborDemand ?? {}) },
+        assignedCount: { ...(clan.assignedCount ?? {}) },
+        storageBonus: clan.storageBonus ?? 0,
+        territorySizeAtTickStart: clan.territorySizeAtTickStart ?? null,
+      })),
+      agents: [...world.agents.values()].map(agent => ({
+        id: agent.id,
+        clanId: agent.clanId,
+        pos: { x: agent.pos?.x ?? 0, y: agent.pos?.y ?? 0 },
+        targetPos: agent.targetPos ? { x: agent.targetPos.x, y: agent.targetPos.y } : null,
+        skills: { ...(agent.skills ?? {}) },
+        personality: { ...(agent.personality ?? {}) },
+        loyalty: agent.loyalty ?? 50,
+        wealth: agent.wealth ?? 0,
+        fatigue: agent.fatigue ?? 0,
+        influence: agent.influence ?? 0,
+        memory: (agent.memory ?? []).map(m => ({
+          action: m.action,
+          success: !!m.success,
+          tick: m.tick ?? 0,
+        })),
+        state: agent.state ?? 'idle',
+        currentAction: agent.currentAction ?? null,
+        taskLock: agent.taskLock ? {
+          action: agent.taskLock.action,
+          lockedUntilTick: agent.taskLock.lockedUntilTick,
+        } : null,
+        path: (agent.path ?? []).map(p => ({ x: p.x, y: p.y })),
+      })),
+    },
+  };
+}
+
+function deserializeWorld(payload) {
+  if (!payload || payload.version !== SAVE_VERSION || !payload.world) return null;
+
+  const raw = payload.world;
+  const width = Number(raw.width);
+  const height = Number(raw.height);
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) return null;
+  if (!Array.isArray(raw.tiles) || raw.tiles.length !== height) return null;
+
+  const seed = Number.isFinite(Number(raw.seed)) ? Number(raw.seed) : 42;
+  const world = {
+    width,
+    height,
+    tiles: [],
+    clans: new Map(),
+    agents: new Map(),
+    buildings: new Map(),
+    tick: Number.isFinite(Number(raw.tick)) ? Number(raw.tick) : 0,
+    events: Array.isArray(raw.events) ? raw.events : [],
+    rng: makeRNG(seed + 1),
+    seed,
+    taxRate: Number.isFinite(Number(raw.taxRate)) ? Number(raw.taxRate) : 0.10,
+    productionBonus: Number.isFinite(Number(raw.productionBonus)) ? Number(raw.productionBonus) : 0,
+    mode: raw.mode === 'intervene' ? 'intervene' : 'observer',
+  };
+  if (Number.isInteger(raw.rngState) && typeof world.rng.setState === 'function') {
+    world.rng.setState(raw.rngState);
+  }
+
+  const validTileTypes = new Set(['grass', 'forest', 'mountain', 'water', 'farmland']);
+  for (let y = 0; y < height; y++) {
+    const row = raw.tiles[y];
+    if (!Array.isArray(row) || row.length !== width) return null;
+    world.tiles[y] = [];
+    for (let x = 0; x < width; x++) {
+      const savedTile = row[x] ?? {};
+      const type = validTileTypes.has(savedTile.type) ? savedTile.type : 'grass';
+      const tile = createTile(x, y, type);
+      tile.fertility = Number.isFinite(Number(savedTile.fertility)) ? Number(savedTile.fertility) : tile.fertility;
+      const amount = Number(savedTile.resource?.amount);
+      tile.resource = {
+        type: savedTile.resource?.type ?? tile.resource.type,
+        amount: Number.isFinite(amount) ? amount : tile.resource.amount,
+      };
+      tile.influence = savedTile.influence && typeof savedTile.influence === 'object' ? { ...savedTile.influence } : {};
+      tile.building = null;
+      tile.occupants = [];
+      world.tiles[y][x] = tile;
+    }
+  }
+
+  if (Array.isArray(raw.buildings)) {
+    for (const savedB of raw.buildings) {
+      if (!savedB || !BUILDING_TYPES[savedB.type]) continue;
+      const id = Number(savedB.id);
+      const clanId = Number(savedB.clanId);
+      const posX = Number(savedB.pos?.x);
+      const posY = Number(savedB.pos?.y);
+      if (!Number.isFinite(id) || !Number.isFinite(clanId) || !Number.isFinite(posX) || !Number.isFinite(posY)) continue;
+      const b = {
+        id,
+        type: savedB.type,
+        clanId,
+        level: Number.isFinite(Number(savedB.level)) ? Number(savedB.level) : 1,
+        pos: { x: posX, y: posY },
+        hp: Number.isFinite(Number(savedB.hp)) ? Number(savedB.hp) : 100,
+        maxHp: Number.isFinite(Number(savedB.maxHp)) ? Number(savedB.maxHp) : 100,
+        workerSlots: Number.isFinite(Number(savedB.workerSlots)) ? Number(savedB.workerSlots) : (BUILDING_TYPES[savedB.type].workerSlots ?? 0),
+        workers: Array.isArray(savedB.workers) ? [...savedB.workers] : [],
+      };
+      world.buildings.set(b.id, b);
+    }
+  }
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const savedTile = raw.tiles[y][x];
+      const bId = Number(savedTile?.buildingId);
+      if (!Number.isFinite(bId)) continue;
+      const building = world.buildings.get(bId);
+      if (building) world.tiles[y][x].building = building;
+    }
+  }
+  for (const b of world.buildings.values()) {
+    const tile = world.tiles[b.pos.y]?.[b.pos.x];
+    if (tile) tile.building = b;
+  }
+
+  const numOr = (v, fallback) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : fallback;
+  };
+
+  if (Array.isArray(raw.clans)) {
+    for (const savedClan of raw.clans) {
+      const clanId = Number(savedClan?.id);
+      if (!Number.isFinite(clanId)) continue;
+      const ideology = normalizeIdeologyWeights(savedClan.ideology);
+      const smoothed = normalizeIdeologyWeights(savedClan.ideologySuccessSmoothed ?? ideology);
+      const clan = {
+        id: clanId,
+        name: typeof savedClan.name === 'string' ? savedClan.name : `Clan ${clanId}`,
+        color: typeof savedClan.color === 'string' ? savedClan.color : CLAN_COLORS[0],
+        ideology,
+        resources: {
+          food:  numOr(savedClan.resources?.food, CFG.START_RESOURCES.food),
+          wood:  numOr(savedClan.resources?.wood, CFG.START_RESOURCES.wood),
+          stone: numOr(savedClan.resources?.stone, CFG.START_RESOURCES.stone),
+          gold:  numOr(savedClan.resources?.gold, CFG.START_RESOURCES.gold),
+        },
+        resourcesAtTickStart: savedClan.resourcesAtTickStart ? {
+          food:  numOr(savedClan.resourcesAtTickStart.food, 0),
+          wood:  numOr(savedClan.resourcesAtTickStart.wood, 0),
+          stone: numOr(savedClan.resourcesAtTickStart.stone, 0),
+          gold:  numOr(savedClan.resourcesAtTickStart.gold, 0),
+        } : null,
+        ideologySuccessSmoothed: smoothed,
+        resourceTarget: {
+          food:  numOr(savedClan.resourceTarget?.food, 60),
+          wood:  numOr(savedClan.resourceTarget?.wood, 50),
+          stone: numOr(savedClan.resourceTarget?.stone, 40),
+          gold:  numOr(savedClan.resourceTarget?.gold, 30),
+        },
+        territory: new Set(Array.isArray(savedClan.territory) ? savedClan.territory : []),
+        techTree: {
+          unlocked: new Set(Array.isArray(savedClan.techTree?.unlocked) ? savedClan.techTree.unlocked : []),
+          research: savedClan.techTree?.research ?? null,
+        },
+        influenceMap: new Map(Array.isArray(savedClan.influenceMap) ? savedClan.influenceMap : []),
+        leader: savedClan.leader ?? null,
+        leaderId: savedClan.leaderId ?? null,
+        allies: new Set(Array.isArray(savedClan.allies) ? savedClan.allies : []),
+        reputation: numOr(savedClan.reputation, 50),
+        agentIds: Array.isArray(savedClan.agentIds) ? [...savedClan.agentIds] : [],
+        buildQueue: Array.isArray(savedClan.buildQueue) ? savedClan.buildQueue.map(job => ({
+          type: job?.type,
+          pos: { x: numOr(job?.pos?.x, 0), y: numOr(job?.pos?.y, 0) },
+        })) : [],
+        laborDemand: savedClan.laborDemand && typeof savedClan.laborDemand === 'object' ? { ...savedClan.laborDemand } : {},
+        assignedCount: savedClan.assignedCount && typeof savedClan.assignedCount === 'object' ? { ...savedClan.assignedCount } : {},
+        storageBonus: numOr(savedClan.storageBonus, 0),
+        territorySizeAtTickStart: savedClan.territorySizeAtTickStart == null ? null : numOr(savedClan.territorySizeAtTickStart, null),
+      };
+      world.clans.set(clan.id, clan);
+    }
+  }
+
+  if (Array.isArray(raw.agents)) {
+    for (const savedAgent of raw.agents) {
+      const id = Number(savedAgent?.id);
+      const clanId = Number(savedAgent?.clanId);
+      if (!Number.isFinite(id) || !Number.isFinite(clanId)) continue;
+      const agent = {
+        id,
+        clanId,
+        pos: {
+          x: numOr(savedAgent.pos?.x, 0),
+          y: numOr(savedAgent.pos?.y, 0),
+        },
+        targetPos: savedAgent.targetPos ? {
+          x: numOr(savedAgent.targetPos.x, 0),
+          y: numOr(savedAgent.targetPos.y, 0),
+        } : null,
+        skills: {
+          build:  numOr(savedAgent.skills?.build, 30),
+          gather: numOr(savedAgent.skills?.gather, 30),
+          fight:  numOr(savedAgent.skills?.fight, 30),
+          trade:  numOr(savedAgent.skills?.trade, 30),
+        },
+        personality: {
+          aggressive:  numOr(savedAgent.personality?.aggressive, 0.5),
+          cooperative: numOr(savedAgent.personality?.cooperative, 0.5),
+          greedy:      numOr(savedAgent.personality?.greedy, 0.5),
+          adaptive:    numOr(savedAgent.personality?.adaptive, 0.5),
+        },
+        loyalty: numOr(savedAgent.loyalty, 50),
+        wealth: numOr(savedAgent.wealth, 0),
+        fatigue: numOr(savedAgent.fatigue, 0),
+        influence: numOr(savedAgent.influence, 0),
+        memory: Array.isArray(savedAgent.memory) ? savedAgent.memory.map(m => ({
+          action: m.action,
+          success: !!m.success,
+          tick: numOr(m.tick, 0),
+        })) : [],
+        state: typeof savedAgent.state === 'string' ? savedAgent.state : 'idle',
+        currentAction: savedAgent.currentAction ?? null,
+        taskLock: savedAgent.taskLock ? {
+          action: savedAgent.taskLock.action,
+          lockedUntilTick: numOr(savedAgent.taskLock.lockedUntilTick, world.tick),
+        } : null,
+        path: Array.isArray(savedAgent.path) ? savedAgent.path.map(p => ({
+          x: numOr(p.x, 0),
+          y: numOr(p.y, 0),
+        })) : [],
+      };
+      world.agents.set(agent.id, agent);
+    }
+  }
+
+  for (const clan of world.clans.values()) {
+    clan.agentIds = (clan.agentIds ?? []).filter(agentId => world.agents.has(agentId));
+  }
+  for (const agent of world.agents.values()) {
+    const clan = world.clans.get(agent.clanId);
+    if (clan && !clan.agentIds.includes(agent.id)) clan.agentIds.push(agent.id);
+  }
+  for (const clan of world.clans.values()) {
+    if (!world.agents.has(clan.leaderId)) assignLeader(clan, world);
+  }
+
+  let maxId = 0;
+  for (const id of world.clans.keys()) maxId = Math.max(maxId, id);
+  for (const id of world.agents.keys()) maxId = Math.max(maxId, id);
+  for (const id of world.buildings.keys()) maxId = Math.max(maxId, id);
+  _uid = Math.max(_uid, Number(payload.uidCounter) || 0, maxId);
+
+  return {
+    world,
+    meta: payload.meta && typeof payload.meta === 'object' ? payload.meta : {},
+  };
+}
+
+function saveWorldToStorage(world, meta = {}) {
+  try {
+    const payload = serializeWorld(world, meta);
+    localStorage.setItem(SAVE_STORAGE_KEY, JSON.stringify(payload));
+    return true;
+  } catch (err) {
+    console.warn('Failed to save world state:', err);
+    return false;
+  }
+}
+
+function loadWorldFromStorage() {
+  try {
+    const raw = localStorage.getItem(SAVE_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return deserializeWorld(parsed);
+  } catch (err) {
+    console.warn('Failed to load world state:', err);
+    return null;
+  }
+}
+
+function clearSavedWorld() {
+  try {
+    localStorage.removeItem(SAVE_STORAGE_KEY);
+  } catch (err) {
+    console.warn('Failed to clear saved world state:', err);
+  }
+}
 
 /* ═══════════════════════════════════════════════════════════════
    CHAPTER 2 — WORLD DATA LAYER
@@ -1210,7 +1585,14 @@ const Renderer = (() => {
     }
   }
 
-  return { init, render, getCamera: () => camera };
+  function setCamera(next) {
+    if (!next || typeof next !== 'object') return;
+    if (Number.isFinite(Number(next.x))) camera.x = Number(next.x);
+    if (Number.isFinite(Number(next.y))) camera.y = Number(next.y);
+    if (Number.isFinite(Number(next.scale))) camera.scale = clamp(Number(next.scale), 0.3, 3);
+  }
+
+  return { init, render, getCamera: () => camera, setCamera };
 })();
 
 /* ═══════════════════════════════════════════════════════════════
@@ -1299,20 +1681,33 @@ const UI = (() => {
     document.getElementById('civilization-inequality').textContent = (ineq * 100).toFixed(1) + '%';
   }
 
-  function init(world) {
+  function setActiveSpeedButton(speed) {
+    document.querySelectorAll('.speed-btn').forEach(btn => {
+      btn.classList.toggle('active', Number(btn.dataset.speed) === Number(speed));
+    });
+  }
+
+  function setActiveModeButton(mode) {
+    document.querySelectorAll('.mode-btn[data-mode]').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.mode === mode);
+    });
+  }
+
+  function init(world, initialSpeed = 1) {
+    setActiveSpeedButton(initialSpeed);
+    setActiveModeButton(world.mode);
+    document.getElementById('intervention-panel').classList.toggle('hidden', world.mode !== 'intervene');
+
     document.querySelectorAll('.speed-btn').forEach(btn => {
       btn.addEventListener('click', () => {
-        document.querySelectorAll('.speed-btn').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
+        setActiveSpeedButton(btn.dataset.speed);
         Engine.setSpeed(Number(btn.dataset.speed));
       });
     });
 
-    document.querySelectorAll('.mode-btn').forEach(btn => {
-      if (btn.id === 'btn-civilization') return;
+    document.querySelectorAll('.mode-btn[data-mode]').forEach(btn => {
       btn.addEventListener('click', () => {
-        document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
+        setActiveModeButton(btn.dataset.mode);
         world.mode = btn.dataset.mode;
         document.getElementById('intervention-panel').classList.toggle('hidden', world.mode !== 'intervene');
       });
@@ -1325,13 +1720,25 @@ const UI = (() => {
       document.getElementById('civilization-modal').classList.add('hidden');
     });
 
-    document.getElementById('tax-slider').addEventListener('input', e => {
+    const taxSlider = document.getElementById('tax-slider');
+    taxSlider.value = String(Math.round((world.taxRate ?? 0.10) * 100));
+    document.getElementById('tax-val').textContent = taxSlider.value;
+    taxSlider.addEventListener('input', e => {
       world.taxRate = Number(e.target.value) / 100;
       document.getElementById('tax-val').textContent = e.target.value;
     });
-    document.getElementById('prod-slider').addEventListener('input', e => {
+
+    const prodSlider = document.getElementById('prod-slider');
+    prodSlider.value = String(Math.round((world.productionBonus ?? 0) * 100));
+    document.getElementById('prod-val').textContent = prodSlider.value;
+    prodSlider.addEventListener('input', e => {
       world.productionBonus = Number(e.target.value) / 100;
       document.getElementById('prod-val').textContent = e.target.value;
+    });
+
+    document.getElementById('btn-new-cycle').addEventListener('click', () => {
+      const ok = window.confirm('Start a new cycle? Current saved progress will be reset.');
+      if (ok) Engine.startNewCycle();
     });
 
     document.querySelectorAll('.event-btn').forEach(btn => {
@@ -1351,7 +1758,88 @@ const Engine = (() => {
   let speedKey = 1;
   let lastTime = 0;
   let accumulator = 0;
+  let lastSavedTick = -1;
+  let loopStarted = false;
+  let persistenceListenersBound = false;
   function setSpeed(s) { speedKey = s; }
+
+  function persistWorld(force = false) {
+    if (!world) return;
+    if (!force && world.tick - lastSavedTick < SAVE_EVERY_TICKS) return;
+    const camera = Renderer.getCamera();
+    const ok = saveWorldToStorage(world, {
+      speedKey,
+      camera: camera ? { x: camera.x, y: camera.y, scale: camera.scale } : null,
+    });
+    if (ok) lastSavedTick = world.tick;
+  }
+
+  function bindPersistenceListeners() {
+    if (persistenceListenersBound) return;
+    window.addEventListener('beforeunload', () => persistWorld(true));
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') persistWorld(true);
+    });
+    persistenceListenersBound = true;
+  }
+
+  function createFreshWorld(seed) {
+    _uid = 0;
+    const newWorld = generateWorld(seed);
+
+    // Create 1 clan
+    const clan = createClan('Alpha', CLAN_COLORS[0], {
+      expansion: 0.3, defense: 0.2, economy: 0.35, tech: 0.15
+    });
+    newWorld.clans.set(clan.id, clan);
+
+    // Place Town Hall roughly in center
+    const cx = Math.floor(newWorld.width / 2);
+    const cy = Math.floor(newWorld.height / 2);
+    // Find nearest grass tile to center
+    let hallPos = { x: cx, y: cy };
+    outer: for (let r = 0; r < 10; r++) {
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          const tx = cx + dx, ty = cy + dy;
+          const t = getWorldTile(newWorld, tx, ty);
+          if (t && t.type === 'grass' && !t.building) { hallPos = { x: tx, y: ty }; break outer; }
+        }
+      }
+    }
+    placeBuilding(newWorld, 'TOWN_HALL', hallPos, clan.id);
+    clan.territory.add(tileKey(hallPos.x, hallPos.y));
+    emitEvent(newWorld, 'info', `Clan ${clan.name} founded their settlement`);
+
+    // Spawn villagers around Town Hall
+    for (let i = 0; i < CFG.AGENTS_PER_CLAN; i++) {
+      const offsetX = newWorld.rng.int(-3, 3);
+      const offsetY = newWorld.rng.int(-3, 3);
+      const tx = clamp(hallPos.x + offsetX, 0, newWorld.width - 1);
+      const ty = clamp(hallPos.y + offsetY, 0, newWorld.height - 1);
+      const v = createVillager(clan.id, { x: tx, y: ty }, newWorld.rng);
+      newWorld.agents.set(v.id, v);
+      clan.agentIds.push(v.id);
+    }
+    emitEvent(newWorld, 'info', `${CFG.AGENTS_PER_CLAN} villagers ready`);
+
+    assignLeader(clan, newWorld);
+
+    // Queue initial builds — find nearest valid tiles for each
+    let farmPos = null, lumberPos = null, minFarm = Infinity, minLumber = Infinity;
+    for (let y = 0; y < newWorld.height; y++) {
+      for (let x = 0; x < newWorld.width; x++) {
+        const t = newWorld.tiles[y][x];
+        const d = dist(hallPos, {x, y});
+        if (t.type === 'farmland' && !t.building && d < minFarm)  { minFarm = d;   farmPos   = {x, y}; }
+        if (t.type === 'forest'   && !t.building && d < minLumber){ minLumber = d; lumberPos = {x, y}; }
+      }
+    }
+    if (farmPos)   clan.buildQueue.push({ type: 'FARM',        pos: farmPos });
+    if (lumberPos) clan.buildQueue.push({ type: 'LUMBER_CAMP', pos: lumberPos });
+
+    return newWorld;
+  }
 
   function loop(timestamp) {
     requestAnimationFrame(loop);
@@ -1363,13 +1851,16 @@ const Engine = (() => {
     const canvas = document.getElementById('world-canvas');
     const intervalMs = CFG.TICK_MS[speedKey] ?? Infinity;
 
+    let advanced = false;
     if (speedKey > 0) {
       accumulator += dt;
       while (accumulator >= intervalMs) {
         tick(world);
         accumulator -= intervalMs;
+        advanced = true;
       }
     }
+    if (advanced) persistWorld(false);
 
     Renderer.render(canvas, world);
     UI.updateClanPanel(world);
@@ -1379,77 +1870,52 @@ const Engine = (() => {
 
   function start() {
     const SEED = 42;
-    world = generateWorld(SEED);
 
-    // Create 1 clan
-    const clan = createClan('Alpha', CLAN_COLORS[0], {
-      expansion: 0.3, defense: 0.2, economy: 0.35, tech: 0.15
-    });
-    world.clans.set(clan.id, clan);
-
-    // Place Town Hall roughly in center
-    const cx = Math.floor(world.width / 2);
-    const cy = Math.floor(world.height / 2);
-    // Find nearest grass tile to center
-    let hallPos = { x: cx, y: cy };
-    outer: for (let r = 0; r < 10; r++) {
-      for (let dy = -r; dy <= r; dy++) {
-        for (let dx = -r; dx <= r; dx++) {
-          const tx = cx + dx, ty = cy + dy;
-          const t = getWorldTile(world, tx, ty);
-          if (t && t.type === 'grass' && !t.building) { hallPos = { x: tx, y: ty }; break outer; }
-        }
-      }
+    const savedState = loadWorldFromStorage();
+    let cameraToRestore = null;
+    if (savedState?.world) {
+      world = savedState.world;
+      const savedSpeed = Number(savedState.meta?.speedKey);
+      speedKey = Number.isFinite(savedSpeed) ? savedSpeed : 1;
+      cameraToRestore = savedState.meta?.camera ?? null;
+    } else {
+      world = createFreshWorld(SEED);
+      speedKey = 1;
     }
-    placeBuilding(world, 'TOWN_HALL', hallPos, clan.id);
-    clan.territory.add(tileKey(hallPos.x, hallPos.y));
-    emitEvent(world, 'info', `Clan ${clan.name} founded their settlement`);
-
-    // Spawn villagers around Town Hall
-    for (let i = 0; i < CFG.AGENTS_PER_CLAN; i++) {
-      const offsetX = world.rng.int(-3, 3);
-      const offsetY = world.rng.int(-3, 3);
-      const tx = clamp(hallPos.x + offsetX, 0, world.width - 1);
-      const ty = clamp(hallPos.y + offsetY, 0, world.height - 1);
-      const v = createVillager(clan.id, { x: tx, y: ty }, world.rng);
-      world.agents.set(v.id, v);
-      clan.agentIds.push(v.id);
-    }
-    emitEvent(world, 'info', `${CFG.AGENTS_PER_CLAN} villagers ready`);
-
-    assignLeader(clan, world);
-
-    // Queue initial builds — find nearest valid tiles for each
-    let farmPos = null, lumberPos = null, minFarm = Infinity, minLumber = Infinity;
-    for (let y = 0; y < world.height; y++) {
-      for (let x = 0; x < world.width; x++) {
-        const t = world.tiles[y][x];
-        const d = dist(hallPos, {x, y});
-        if (t.type === 'farmland' && !t.building && d < minFarm)  { minFarm = d;   farmPos   = {x, y}; }
-        if (t.type === 'forest'   && !t.building && d < minLumber){ minLumber = d; lumberPos = {x, y}; }
-      }
-    }
-    if (farmPos)   clan.buildQueue.push({ type: 'FARM',        pos: farmPos });
-    if (lumberPos) clan.buildQueue.push({ type: 'LUMBER_CAMP', pos: lumberPos });
 
     // Init renderer
     const canvas = document.getElementById('world-canvas');
     Renderer.init(canvas, world);
+    if (cameraToRestore) Renderer.setCamera(cameraToRestore);
 
     // Init UI
-    UI.init(world);
+    UI.init(world, speedKey);
 
-    // Add tooltip div
-    const tooltip = document.createElement('div');
-    tooltip.id = 'tile-tooltip';
-    document.getElementById('world-container').appendChild(tooltip);
+    // Add tooltip div once
+    if (!document.getElementById('tile-tooltip')) {
+      const tooltip = document.createElement('div');
+      tooltip.id = 'tile-tooltip';
+      document.getElementById('world-container').appendChild(tooltip);
+    }
+
+    bindPersistenceListeners();
+    persistWorld(true);
 
     // Start loop
+    accumulator = 0;
     lastTime = performance.now();
-    requestAnimationFrame(loop);
+    if (!loopStarted) {
+      loopStarted = true;
+      requestAnimationFrame(loop);
+    }
   }
 
-  return { start, setSpeed };
+  function startNewCycle() {
+    clearSavedWorld();
+    window.location.reload();
+  }
+
+  return { start, setSpeed, startNewCycle };
 })();
 
 window.addEventListener('DOMContentLoaded', () => Engine.start());
