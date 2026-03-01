@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Emergent Civilization</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <div id="world-container">
+      <canvas id="world-canvas"></canvas>
+    </div>
+    <div id="side-panel">
+      <div id="clan-panel">
+        <h3 id="clan-title">Clan —</h3>
+        <div class="panel-section">
+          <div class="section-label">IDEOLOGY</div>
+          <div id="ideology-bars"></div>
+        </div>
+        <div class="panel-section">
+          <div class="section-label">RESOURCES</div>
+          <div class="resource-grid">
+            <div class="res-item"><span class="res-icon">🌾</span><span class="res-val" id="res-food">0</span></div>
+            <div class="res-item"><span class="res-icon">🪵</span><span class="res-val" id="res-wood">0</span></div>
+            <div class="res-item"><span class="res-icon">🪨</span><span class="res-val" id="res-stone">0</span></div>
+            <div class="res-item"><span class="res-icon">🪙</span><span class="res-val" id="res-gold">0</span></div>
+          </div>
+        </div>
+        <div class="panel-section">
+          <div class="section-label">POPULATION</div>
+          <div>Villagers: <span id="pop-count">0</span></div>
+          <div>Territory: <span id="territory-count">0</span> tiles</div>
+        </div>
+      </div>
+      <div id="event-log-panel">
+        <div class="section-label">EVENT LOG</div>
+        <div id="event-log"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="bottom-bar">
+    <div id="speed-controls">
+      <span class="bar-label">SPEED</span>
+      <button class="speed-btn active" data-speed="1">x1</button>
+      <button class="speed-btn" data-speed="5">x5</button>
+      <button class="speed-btn" data-speed="10">x10</button>
+      <button class="speed-btn" data-speed="0" id="btn-pause">⏸</button>
+    </div>
+    <div id="tick-display">
+      <span class="bar-label">TICK</span>
+      <span id="tick-count">0</span>
+    </div>
+    <button type="button" id="btn-civilization" class="mode-btn">Civilization</button>
+    <div id="mode-controls">
+      <span class="bar-label">MODE</span>
+      <button class="mode-btn active" data-mode="observer">Observer</button>
+      <button class="mode-btn" data-mode="intervene">Intervene</button>
+    </div>
+  </div>
+
+  <div id="intervention-panel" class="hidden">
+    <div class="section-label">INTERVENTION</div>
+    <div class="intervention-row">
+      <label>Tax Rate <span id="tax-val">10</span>%</label>
+      <input type="range" id="tax-slider" min="0" max="50" value="10">
+    </div>
+    <div class="intervention-row">
+      <label>Production Bonus <span id="prod-val">0</span>%</label>
+      <input type="range" id="prod-slider" min="0" max="100" value="0">
+    </div>
+    <div class="section-label" style="margin-top:10px">EVENTS</div>
+    <div class="event-buttons">
+      <button class="event-btn" data-event="famine">🌵 Famine</button>
+      <button class="event-btn" data-event="abundance">🌈 Abundance</button>
+      <button class="event-btn" data-event="earthquake">🌋 Earthquake</button>
+      <button class="event-btn" data-event="plague">☠️ Plague</button>
+    </div>
+  </div>
+
+  <div id="civilization-modal" class="modal hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Civilization</h3>
+        <button type="button" id="civilization-modal-close" class="modal-close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="panel-section">
+          <div class="section-label">EVOLVING IDEOLOGY</div>
+          <div id="civilization-ideology-bars"></div>
+        </div>
+        <div class="panel-section">
+          <div class="section-label">LEADER</div>
+          <div id="civilization-leader">—</div>
+        </div>
+        <div class="panel-section">
+          <div class="section-label">LOYALTY</div>
+          <div id="civilization-loyalty">—</div>
+        </div>
+        <div class="panel-section">
+          <div class="section-label">WEALTH INEQUALITY</div>
+          <div id="civilization-inequality">—</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
