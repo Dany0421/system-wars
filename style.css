@@ -18,6 +18,8 @@ body {
   font-family: 'Courier New', monospace;
   font-size: 12px;
   height: 100vh;
+  height: 100dvh;
+  min-height: 100svh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -28,6 +30,7 @@ body {
   display: flex;
   flex: 1;
   overflow: hidden;
+  min-height: 0;
 }
 
 #world-container {
@@ -36,6 +39,8 @@ body {
   overflow: hidden;
   background: #080c14;
   cursor: crosshair;
+  min-width: 0;
+  min-height: 0;
 }
 
 #world-canvas {
@@ -51,6 +56,7 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  min-height: 0;
 }
 
 /* ── Clan Panel ── */
@@ -329,4 +335,87 @@ body {
   font-size: 11px;
   color: var(--text);
   line-height: 1.5;
+}
+
+/* ── Mobile-only viewport + HUD compaction ── */
+@media (hover: none) and (pointer: coarse) and (max-width: 1024px) {
+  body {
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  #side-panel {
+    width: min(38vw, 190px);
+    min-width: 150px;
+  }
+
+  #clan-panel,
+  #event-log-panel {
+    padding: 8px;
+  }
+
+  #event-log {
+    min-height: 0;
+  }
+
+  #bottom-bar {
+    height: 40px;
+    min-height: 40px;
+    gap: 10px;
+    padding: 0 10px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  #bottom-bar::-webkit-scrollbar {
+    display: none;
+  }
+
+  #speed-controls,
+  #tick-display,
+  #mode-controls,
+  #btn-civilization {
+    flex-shrink: 0;
+  }
+
+  .bar-label {
+    letter-spacing: 1px;
+    margin-right: 4px;
+  }
+
+  .speed-btn,
+  .mode-btn {
+    padding: 3px 7px;
+    font-size: 10px;
+    margin-right: 2px;
+  }
+
+  #intervention-panel {
+    left: 8px;
+    right: 8px;
+    bottom: 48px;
+    width: auto;
+    max-width: 320px;
+  }
+}
+
+@media (hover: none) and (pointer: coarse) and (max-height: 520px) {
+  #clan-title {
+    font-size: 12px;
+    margin-bottom: 6px;
+  }
+
+  .panel-section {
+    margin-bottom: 8px;
+  }
+
+  .section-label {
+    margin-bottom: 4px;
+  }
+
+  .ideology-row {
+    margin-bottom: 3px;
+  }
 }

@@ -1063,6 +1063,10 @@ const Renderer = (() => {
       canvas.height = canvas.parentElement.clientHeight;
     };
     window.addEventListener('resize', onResize);
+    window.addEventListener('orientationchange', onResize);
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', onResize);
+    }
     onResize();
 
     // Pan
