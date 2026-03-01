@@ -1431,6 +1431,46 @@ const Renderer = (() => {
   const S = CFG.TILE_SIZE;
   let camera = { x: 0, y: 0, scale: 1 };
   let dragging = false, dragStart = null;
+  let touchPanStart = null;
+  let touchPinchStart = null;
+
+  function zoomAt(screenX, screenY, factor) {
+    const nextScale = clamp(camera.scale * factor, 0.3, 3);
+    const appliedFactor = nextScale / camera.scale;
+    camera.x = screenX - (screenX - camera.x) * appliedFactor;
+    camera.y = screenY - (screenY - camera.y) * appliedFactor;
+    camera.scale = nextScale;
+  }
+
+  function getTouchPairInfo(touches, rect) {
+    if (!touches || touches.length < 2) return null;
+    const t0 = touches[0];
+    const t1 = touches[1];
+    const x0 = t0.clientX - rect.left;
+    const y0 = t0.clientY - rect.top;
+    const x1 = t1.clientX - rect.left;
+    const y1 = t1.clientY - rect.top;
+    return {
+      midX: (x0 + x1) / 2,
+      midY: (y0 + y1) / 2,
+      distance: Math.hypot(x1 - x0, y1 - y0),
+    };
+  }
+
+  function beginPinch(touches, canvas) {
+    const rect = canvas.getBoundingClientRect();
+    const pair = getTouchPairInfo(touches, rect);
+    if (!pair || pair.distance <= 0) {
+      touchPinchStart = null;
+      return;
+    }
+    touchPinchStart = {
+      worldX: (pair.midX - camera.x) / (S * camera.scale),
+      worldY: (pair.midY - camera.y) / (S * camera.scale),
+      startDistance: pair.distance,
+      startScale: camera.scale,
+    };
+  }
 
   function init(canvas, world) {
     const onResize = () => {
@@ -1466,10 +1506,73 @@ const Renderer = (() => {
       const rect = canvas.getBoundingClientRect();
       const mx = e.clientX - rect.left;
       const my = e.clientY - rect.top;
-      camera.x = mx - (mx - camera.x) * factor;
-      camera.y = my - (my - camera.y) * factor;
-      camera.scale = clamp(camera.scale * factor, 0.3, 3);
+      zoomAt(mx, my, factor);
     }, { passive: false });
+
+    // Touch pan + pinch (mobile/tablet)
+    canvas.addEventListener('touchstart', e => {
+      if (e.touches.length === 1) {
+        const t = e.touches[0];
+        touchPanStart = {
+          clientX: t.clientX,
+          clientY: t.clientY,
+          camX: camera.x,
+          camY: camera.y,
+        };
+        touchPinchStart = null;
+      } else if (e.touches.length >= 2) {
+        touchPanStart = null;
+        beginPinch(e.touches, canvas);
+      }
+      dragging = false;
+      e.preventDefault();
+    }, { passive: false });
+
+    canvas.addEventListener('touchmove', e => {
+      if (e.touches.length === 1 && touchPanStart) {
+        const t = e.touches[0];
+        camera.x = touchPanStart.camX + (t.clientX - touchPanStart.clientX);
+        camera.y = touchPanStart.camY + (t.clientY - touchPanStart.clientY);
+        e.preventDefault();
+        return;
+      }
+
+      if (e.touches.length >= 2) {
+        if (!touchPinchStart) beginPinch(e.touches, canvas);
+        const rect = canvas.getBoundingClientRect();
+        const pair = getTouchPairInfo(e.touches, rect);
+        if (touchPinchStart && pair && touchPinchStart.startDistance > 0) {
+          const rawScale = touchPinchStart.startScale * (pair.distance / touchPinchStart.startDistance);
+          const nextScale = clamp(rawScale, 0.3, 3);
+          camera.scale = nextScale;
+          camera.x = pair.midX - touchPinchStart.worldX * (S * nextScale);
+          camera.y = pair.midY - touchPinchStart.worldY * (S * nextScale);
+        }
+        e.preventDefault();
+      }
+    }, { passive: false });
+
+    const onTouchEnd = e => {
+      if (e.touches.length === 0) {
+        touchPanStart = null;
+        touchPinchStart = null;
+      } else if (e.touches.length === 1) {
+        const t = e.touches[0];
+        touchPanStart = {
+          clientX: t.clientX,
+          clientY: t.clientY,
+          camX: camera.x,
+          camY: camera.y,
+        };
+        touchPinchStart = null;
+      } else {
+        touchPanStart = null;
+        beginPinch(e.touches, canvas);
+      }
+      dragging = false;
+    };
+    canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+    canvas.addEventListener('touchcancel', onTouchEnd, { passive: true });
 
     // Center camera on world
     camera.x = (canvas.width  - world.width  * S) / 2;
