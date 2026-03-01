@@ -1737,8 +1737,7 @@ const UI = (() => {
     });
 
     document.getElementById('btn-new-cycle').addEventListener('click', () => {
-      const ok = window.confirm('Start a new cycle? Current saved progress will be reset.');
-      if (ok) Engine.startNewCycle();
+      Engine.startNewCycle();
     });
 
     document.querySelectorAll('.event-btn').forEach(btn => {
@@ -1761,10 +1760,11 @@ const Engine = (() => {
   let lastSavedTick = -1;
   let loopStarted = false;
   let persistenceListenersBound = false;
+  let isResettingCycle = false;
   function setSpeed(s) { speedKey = s; }
 
   function persistWorld(force = false) {
-    if (!world) return;
+    if (!world || isResettingCycle) return;
     if (!force && world.tick - lastSavedTick < SAVE_EVERY_TICKS) return;
     const camera = Renderer.getCamera();
     const ok = saveWorldToStorage(world, {
@@ -1911,6 +1911,7 @@ const Engine = (() => {
   }
 
   function startNewCycle() {
+    isResettingCycle = true;
     clearSavedWorld();
     window.location.reload();
   }
