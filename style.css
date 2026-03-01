@@ -342,6 +342,21 @@ body {
   body {
     padding-top: env(safe-area-inset-top);
     padding-bottom: env(safe-area-inset-bottom);
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+    touch-action: manipulation;
+  }
+
+  #app {
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+    touch-action: manipulation;
+  }
+
+  #world-container {
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+    touch-action: manipulation;
   }
 
   #side-panel {
