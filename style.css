@@ -363,6 +363,9 @@ body {
   #side-panel {
     width: min(38vw, 190px);
     min-width: 150px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
   }
 
   #clan-panel,
@@ -370,8 +373,14 @@ body {
     padding: 8px;
   }
 
+  #event-log-panel {
+    flex: none;
+    min-height: 180px;
+  }
+
   #event-log {
-    min-height: 0;
+    min-height: 140px;
+    max-height: 45vh;
   }
 
   #bottom-bar {
